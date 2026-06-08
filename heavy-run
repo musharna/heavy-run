@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+# heavy-run — wrap a command in a memory-capped systemd user scope.
+#
+# If the command exceeds the cap, the kernel OOM-kills *the command* instead of
+# taking down the whole machine — or, under WSL2, the entire Linux VM. Useful
+# for fork-happy data pipelines (R mclapply, Python multiprocessing/joblib) that
+# can balloon past available RAM and otherwise hard-lock the host.
+#
+# Usage:
+#   heavy-run Rscript analysis/run_pipeline.R
+#   HEAVY_RUN_MEM=10G HEAVY_RUN_SWAP=2G heavy-run python train.py
+#
+# Defaults: MemoryMax=14G, MemorySwapMax=4G (override via env vars below).
+#
+# Requires user-mode systemd (e.g. WSL2 with `systemd=true`, or any systemd
+# Linux) with the memory controller delegated to the user slice (handled by
+# recent systemd). If systemd-run is unavailable it runs the command unprotected
+# rather than failing.
+
+set -euo pipefail
+
+if [[ $# -eq 0 ]]; then
+  cat >&2 <<'EOF'
+heavy-run: run a command inside a memory-capped cgroup so OOM kills the job, not the host.
+
+Usage: heavy-run <command> [args...]
+
+Env overrides:
+  HEAVY_RUN_MEM      MemoryMax        (default: 14G)
+  HEAVY_RUN_SWAP     MemorySwapMax    (default: 4G)
+  HEAVY_RUN_RESERVE  GiB of MemAvailable to keep free; refuse to launch if the
+                     requested cap would dip below it (default: 2; set 0 to disable)
+  HEAVY_RUN_FORCE=1  Skip the headroom pre-flight entirely
+
+Examples:
+  heavy-run Rscript ~/analysis/run_pipeline.R
+  HEAVY_RUN_MEM=10G heavy-run python train.py
+EOF
+  exit 64
+fi
+
+MEM="${HEAVY_RUN_MEM:-14G}"
+SWAP="${HEAVY_RUN_SWAP:-4G}"
+
+parse_size() {
+  local v=$1 n suffix
+  n=${v%[GgMmKk]}
+  suffix=${v#$n}
+  case "$suffix" in
+    G|g) echo $((n * 1024 * 1024 * 1024)) ;;
+    M|m) echo $((n * 1024 * 1024)) ;;
+    K|k) echo $((n * 1024)) ;;
+    *)   echo "$n" ;;
+  esac
+}
+
+# Pre-flight headroom check: refuse to launch when the requested MemoryMax would
+# leave less than HEAVY_RUN_RESERVE GiB of MemAvailable free. Prevents queuing a
+# job that is doomed to be OOM-killed the moment it touches its working set.
+RESERVE="${HEAVY_RUN_RESERVE:-2}"
+if [[ "${HEAVY_RUN_FORCE:-0}" != "1" && "$RESERVE" != "0" && -r /proc/meminfo ]]; then
+  REQ_BYTES=$(parse_size "$MEM")
+  AVAIL_BYTES=$(( $(awk '/^MemAvailable:/ {print $2}' /proc/meminfo) * 1024 ))
+  ONE_GIB=$((1024 * 1024 * 1024))
+  HEADROOM=$(( AVAIL_BYTES - RESERVE * ONE_GIB ))
+
+  if (( REQ_BYTES > HEADROOM )); then
+    fmt() { awk -v b="$1" 'BEGIN{printf "%.1f GiB", b/1073741824}'; }
+    cat >&2 <<EOF
+heavy-run: REFUSING — insufficient headroom for requested MemoryMax.
+  requested MEM:  $MEM ($(fmt $REQ_BYTES))
+  MemAvailable:   $(fmt $AVAIL_BYTES)
+  reserve:        ${RESERVE} GiB
+  headroom:       $(fmt $HEADROOM)
+
+Options:
+  - Wait for other memory-hungry processes to finish
+  - Lower HEAVY_RUN_MEM if the job actually needs less
+  - Lower HEAVY_RUN_RESERVE, or override: HEAVY_RUN_FORCE=1 heavy-run ...
+EOF
+    exit 75  # EX_TEMPFAIL
+  fi
+fi
+
+if ! command -v systemd-run >/dev/null 2>&1; then
+  echo "heavy-run: systemd-run not found; running command UNPROTECTED" >&2
+  exec "$@"
+fi
+
+exec systemd-run --user --scope --quiet --same-dir \
+  -p MemoryMax="$MEM" \
+  -p MemorySwapMax="$SWAP" \
+  -- "$@"
