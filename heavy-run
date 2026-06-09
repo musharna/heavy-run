@@ -42,16 +42,16 @@ fi
 MEM="${HEAVY_RUN_MEM:-14G}"
 SWAP="${HEAVY_RUN_SWAP:-4G}"
 
+# Convert a systemd-style size (e.g. 14G, 512M, 10.5G, 1024) to a byte count on
+# stdout. Uses awk so fractional values like 10.5G parse correctly — bash
+# integer arithmetic would abort on the decimal point under `set -e`.
 parse_size() {
-  local v=$1 n suffix
-  n=${v%[GgMmKk]}
-  suffix=${v#$n}
-  case "$suffix" in
-    G|g) echo $((n * 1024 * 1024 * 1024)) ;;
-    M|m) echo $((n * 1024 * 1024)) ;;
-    K|k) echo $((n * 1024)) ;;
-    *)   echo "$n" ;;
-  esac
+  awk -v v="$1" 'BEGIN{
+    n = v + 0
+    s = substr(v, length(v), 1)
+    m = (s ~ /[Gg]/) ? 2^30 : (s ~ /[Mm]/) ? 2^20 : (s ~ /[Kk]/) ? 2^10 : 1
+    printf "%d", n * m
+  }'
 }
 
 # Pre-flight headroom check: refuse to launch when the requested MemoryMax would
@@ -68,7 +68,7 @@ if [[ "${HEAVY_RUN_FORCE:-0}" != "1" && "$RESERVE" != "0" && -r /proc/meminfo ]]
     fmt() { awk -v b="$1" 'BEGIN{printf "%.1f GiB", b/1073741824}'; }
     cat >&2 <<EOF
 heavy-run: REFUSING — insufficient headroom for requested MemoryMax.
-  requested MEM:  $MEM ($(fmt $REQ_BYTES))
+  requested MEM:  $MEM ($(fmt "$REQ_BYTES"))
   MemAvailable:   $(fmt $AVAIL_BYTES)
   reserve:        ${RESERVE} GiB
   headroom:       $(fmt $HEADROOM)
