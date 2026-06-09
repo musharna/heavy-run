@@ -1,0 +1,32 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: shellcheck
+        run: shellcheck heavy-run
+
+      - name: smoke test
+        run: |
+          set -euo pipefail
+
+          # (a) no args -> usage on stderr, exit 64
+          out=$(./heavy-run 2>&1 1>/dev/null) && rc=0 || rc=$?
+          test "$rc" -eq 64 || { echo "expected exit 64, got $rc"; exit 1; }
+          echo "$out" | grep -q "Usage: heavy-run" || { echo "missing usage text"; exit 1; }
+
+          # (c) parse_size handles binary suffixes incl. fractional
+          eval "$(sed -n '/^parse_size()/,/^}/p' heavy-run)"
+          test "$(parse_size 14G)" = 15032385536  || { echo "14G wrong";  exit 1; }
+          test "$(parse_size 512M)" = 536870912    || { echo "512M wrong"; exit 1; }
+          test "$(parse_size 10.5G)" = 11274289152 || { echo "10.5G wrong"; exit 1; }
+
+          echo "smoke test passed"

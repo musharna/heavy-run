@@ -52,6 +52,8 @@ chmod +x ~/.local/bin/heavy-run
 
 (Ensure `~/.local/bin` is on your `PATH`.)
 
+> Review the script before installing — it sets cgroup memory limits and execs arbitrary commands you pass to it.
+
 ## How it works
 
 It's a single ~90-line bash script. The core is one line:
