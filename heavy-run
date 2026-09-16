@@ -14,8 +14,8 @@
 #
 # Requires user-mode systemd (e.g. WSL2 with `systemd=true`, or any systemd
 # Linux) with the memory controller delegated to the user slice (handled by
-# recent systemd). If systemd-run is unavailable it runs the command unprotected
-# rather than failing.
+# recent systemd). If systemd-run is unavailable it REFUSES (exit 69) unless
+# HEAVY_RUN_UNCAPPED=1 says you accept running with no cap.
 
 set -euo pipefail
 
@@ -31,6 +31,8 @@ Env overrides:
   HEAVY_RUN_RESERVE  GiB of MemAvailable to keep free; refuse to launch if the
                      requested cap would dip below it (default: 2; set 0 to disable)
   HEAVY_RUN_FORCE=1  Skip the headroom pre-flight entirely
+  HEAVY_RUN_UNCAPPED=1  If systemd-run is missing, run the command anyway with
+                     NO cap (default: refuse with exit 69)
 
 Examples:
   heavy-run Rscript ~/analysis/run_pipeline.R
@@ -82,9 +84,21 @@ EOF
   fi
 fi
 
+# Fail CLOSED when the cap cannot be applied. The whole point of this wrapper is
+# that a runaway job dies instead of the host; silently running uncapped turns a
+# safety tool into a no-op that still looks like it worked. Running without the
+# cap needs the caller's explicit consent.
 if ! command -v systemd-run >/dev/null 2>&1; then
-  echo "heavy-run: systemd-run not found; running command UNPROTECTED" >&2
-  exec "$@"
+  if [[ "${HEAVY_RUN_UNCAPPED:-0}" == "1" ]]; then
+    echo "heavy-run: systemd-run not found; HEAVY_RUN_UNCAPPED=1 set, running command UNCAPPED" >&2
+    exec "$@"
+  fi
+  cat >&2 <<'EOF'
+heavy-run: REFUSING — systemd-run not found, so no memory cap can be applied.
+  Install user-mode systemd (WSL2: systemd=true in /etc/wsl.conf), or run
+  the command uncapped on purpose with HEAVY_RUN_UNCAPPED=1.
+EOF
+  exit 69 # EX_UNAVAILABLE
 fi
 
 exec systemd-run --user --scope --quiet --same-dir \

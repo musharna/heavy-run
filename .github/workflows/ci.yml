@@ -30,3 +30,35 @@ jobs:
           test "$(parse_size 10.5G)" = 11274289152 || { echo "10.5G wrong"; exit 1; }
 
           echo "smoke test passed"
+
+      - name: fail-closed without systemd-run (and explicit uncapped override)
+        run: |
+          set -euo pipefail
+          # A PATH with everything heavy-run needs EXCEPT systemd-run.
+          sandbox=$(mktemp -d)
+          for t in bash awk cat true env touch; do ln -s "$(command -v $t)" "$sandbox/$t"; done
+          # negative: must refuse with 69 and NOT run the command
+          marker="$sandbox/ran"
+          rc=0; PATH="$sandbox" HEAVY_RUN_FORCE=1 ./heavy-run env touch "$marker" 2>/dev/null || rc=$?
+          test "$rc" -eq 69 || { echo "expected exit 69 without systemd-run, got $rc"; exit 1; }
+          test ! -e "$marker" || { echo "command RAN despite refusal"; exit 1; }
+          # positive control: explicit consent runs it uncapped
+          rc=0; PATH="$sandbox" HEAVY_RUN_FORCE=1 HEAVY_RUN_UNCAPPED=1 ./heavy-run env touch "$marker" 2>/dev/null || rc=$?
+          test "$rc" -eq 0 || { echo "override path exited $rc"; exit 1; }
+          test -e "$marker" || { echo "override path did not run the command"; exit 1; }
+          echo "fail-closed test passed"
+
+      - name: the cap itself kills an over-budget job and spares an in-budget one
+        run: |
+          set -euo pipefail
+          if ! systemd-run --user --scope --quiet -p MemoryMax=64M -- true 2>/dev/null; then
+            echo "::warning::CAP TEST NOT RUN — this runner has no user-cgroup memory delegation. The cap is untested here."
+            exit 0
+          fi
+          alloc='import sys; n=int(sys.argv[1]); b=bytearray(n*1024*1024); print("allocated", n, "MiB")'
+          # negative: 3x the cap must die (137 = SIGKILL from the OOM killer)
+          rc=0; HEAVY_RUN_MEM=100M HEAVY_RUN_SWAP=0 HEAVY_RUN_FORCE=1 ./heavy-run python3 -c "$alloc" 300 || rc=$?
+          test "$rc" -ne 0 || { echo "300 MiB allocation SURVIVED a 100M cap — the cap is not applied"; exit 1; }
+          # positive control: well under the cap must succeed
+          HEAVY_RUN_MEM=100M HEAVY_RUN_SWAP=0 HEAVY_RUN_FORCE=1 ./heavy-run python3 -c "$alloc" 20
+          echo "cap test passed (over-budget rc=$rc)"
