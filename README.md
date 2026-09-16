@@ -35,7 +35,8 @@ Before launching, `heavy-run` reads `MemAvailable` from `/proc/meminfo` and refu
 ## Requirements
 
 - **User-mode systemd** with the memory controller delegated to the user slice. This is the default on modern systemd Linux, and on WSL2 with `systemd=true` in `/etc/wsl.conf`.
-- If `systemd-run` isn't found, `heavy-run` prints a warning and runs the command **unprotected** rather than failing.
+- If `systemd-run` isn't found, `heavy-run` **refuses** (exit 69) — a safety wrapper that silently runs uncapped is worse than none. To run anyway, say so: `HEAVY_RUN_UNCAPPED=1 heavy-run …`. (Before 1.1.0 it fell through to an uncapped run with only a warning.)
+- Note `ulimit -v` / `RLIMIT_AS` is **not** a substitute: it caps each process's address space, not the aggregate of a fork-heavy job — exactly the workload this tool exists for.
 
 Verify your setup:
 
