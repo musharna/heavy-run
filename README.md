@@ -1,5 +1,8 @@
 # heavy-run
 
+[![ci](https://github.com/musharna/heavy-run/actions/workflows/ci.yml/badge.svg)](https://github.com/musharna/heavy-run/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 Run a heavy command inside a **memory-capped systemd user scope**, so that when it blows past available RAM the kernel OOM-kills _the command_ — not your whole machine, and not (under WSL2) the entire Linux VM.
 
 ```bash
